@@ -20,17 +20,18 @@
 //! whose sources are plain files (the demo's, the files tests write by
 //! hand).
 //!
-//! `ring` does the AES (hardware AES and carry-less multiply): about 13 GB/s
-//! on one core, some 12 µs for a texture of the cache.
+//! The RustCrypto crates do the AES (`aes-gcm`: hardware AES and carry-less
+//! multiply where the processor has them), the HKDF and the HMAC.
 //!
 //! The store's file names derive from the installation key too
 //! ([`Names`]): an HMAC-SHA256 of the asset id, under a key of its own
 //! (HKDF of the installation key), so that a name says nothing of the asset
 //! without the key.
 
-use ring::aead::{self, Aad, LessSafeKey, Nonce};
-use ring::rand::{SecureRandom, SystemRandom};
-use ring::{hkdf, hmac};
+use aes_gcm::{AeadInOut, Aes256Gcm, KeyInit, Nonce, Tag};
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::io::{self, Read, Seek, SeekFrom};
 
 pub const MAGIC: &[u8; 4] = b"AUSL";
@@ -69,10 +70,18 @@ pub fn sealed_len(len: u64) -> u64 {
     HEADER as u64 + len + chunks(len) * TAG as u64
 }
 
-fn nonce(chunk: u64) -> Nonce {
-    let mut n = [0u8; aead::NONCE_LEN];
+fn nonce(chunk: u64) -> Nonce<aes_gcm::aead::consts::U12> {
+    let mut n = [0u8; 12];
     n[4..].copy_from_slice(&chunk.to_be_bytes());
-    Nonce::assume_unique_for_key(n)
+    n.into()
+}
+
+/// Decrypt in place a chunk followed by its tag; the tag stays behind it.
+fn open_chunk(key: &Aes256Gcm, chunk: u64, header: &[u8; HEADER], sealed: &mut [u8]) -> io::Result<()> {
+    let (data, tag) = sealed.split_at_mut(sealed.len() - TAG);
+    let tag = Tag::try_from(&*tag).map_err(|_| invalid("authentication"))?;
+    key.decrypt_inout_detached(&nonce(chunk), header, data.into(), &tag)
+        .map_err(|_| invalid("authentication"))
 }
 
 /// Whether these bytes start like a sealed file.
@@ -98,33 +107,33 @@ impl Key {
     /// A new key from the system's random source (None if it fails).
     pub fn random() -> Option<Key> {
         let mut k = [0u8; 32];
-        SystemRandom::new().fill(&mut k).ok()?;
+        getrandom::fill(&mut k).ok()?;
         Some(Key(k))
     }
 
-    fn file_key(&self, header: &[u8; HEADER]) -> io::Result<LessSafeKey> {
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &header[4..4 + SALT]).extract(&self.0);
-        let okm = prk
-            .expand(&[INFO], &aead::AES_256_GCM)
+    fn file_key(&self, header: &[u8; HEADER]) -> io::Result<Aes256Gcm> {
+        let mut okm = [0u8; 32];
+        Hkdf::<Sha256>::new(Some(&header[4..4 + SALT]), &self.0)
+            .expand(INFO, &mut okm)
             .map_err(|_| io::Error::other("sealed cache file: key derivation"))?;
-        Ok(LessSafeKey::new(aead::UnboundKey::from(okm)))
+        Ok(Aes256Gcm::new(&okm.into()))
     }
 
     /// The key of the store's file names.
     pub fn names(&self) -> Names {
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, NAMES_SALT).extract(&self.0);
+        let mut okm = [0u8; 32];
         // (HKDF refuses only an output longer than 255 hashes: this one is one)
-        let okm = prk.expand(&[NAMES_INFO], hmac::HMAC_SHA256).expect("one SHA-256 output");
-        Names(hmac::Key::from(okm))
+        Hkdf::<Sha256>::new(Some(NAMES_SALT), &self.0)
+            .expand(NAMES_INFO, &mut okm)
+            .expect("one SHA-256 output");
+        Names(okm)
     }
 
     /// The sealed file of `plain`.
     pub fn seal(&self, plain: &[u8]) -> io::Result<Vec<u8>> {
         let mut header = [0u8; HEADER];
         header[..4].copy_from_slice(MAGIC);
-        SystemRandom::new()
-            .fill(&mut header[4..4 + SALT])
-            .map_err(|_| io::Error::other("sealed cache file: no random source"))?;
+        getrandom::fill(&mut header[4..4 + SALT]).map_err(|_| io::Error::other("sealed cache file: no random source"))?;
         header[4 + SALT..].copy_from_slice(&(plain.len() as u64).to_le_bytes());
         let key = self.file_key(&header)?;
         let mut out = Vec::with_capacity(sealed_len(plain.len() as u64) as usize);
@@ -137,9 +146,9 @@ impl Key {
             let start = out.len();
             out.extend_from_slice(part);
             let tag = key
-                .seal_in_place_separate_tag(nonce(i as u64), Aad::from(&header), &mut out[start..])
+                .encrypt_inout_detached(&nonce(i as u64), &header, (&mut out[start..]).into())
                 .map_err(|_| io::Error::other("sealed cache file: encryption"))?;
-            out.extend_from_slice(tag.as_ref());
+            out.extend_from_slice(&tag);
         }
         Ok(out)
     }
@@ -173,8 +182,7 @@ impl Key {
         let (mut read, mut write) = (HEADER, 0);
         for i in 0..chunks(len) {
             let n = (len - i * CHUNK as u64).min(CHUNK as u64) as usize;
-            key.open_in_place(nonce(i), Aad::from(&header), &mut file[read..read + n + TAG])
-                .map_err(|_| invalid("authentication"))?;
+            open_chunk(&key, i, &header, &mut file[read..read + n + TAG])?;
             // (the plain bytes move down over the header and the tags)
             file.copy_within(read..read + n, write);
             read += n + TAG;
@@ -186,7 +194,7 @@ impl Key {
 }
 
 /// The file names of the store ([`Key::names`]).
-pub struct Names(hmac::Key);
+pub struct Names([u8; 32]);
 
 impl std::fmt::Debug for Names {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -197,9 +205,12 @@ impl std::fmt::Debug for Names {
 impl Names {
     /// The stem of the file of `id`: [`NAME_LEN`] lowercase hex digits.
     pub fn name(&self, id: &uuid::Uuid) -> String {
-        let tag = hmac::sign(&self.0, id.as_bytes());
+        // (HMAC takes a key of any length)
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC key");
+        mac.update(id.as_bytes());
+        let tag = mac.finalize().into_bytes();
         let mut out = String::with_capacity(NAME_LEN);
-        for b in &tag.as_ref()[..NAME_LEN / 2] {
+        for b in &tag[..NAME_LEN / 2] {
             out.push(char::from_digit(u32::from(b >> 4), 16).unwrap_or('0'));
             out.push(char::from_digit(u32::from(b & 15), 16).unwrap_or('0'));
         }
@@ -217,7 +228,7 @@ pub struct Reader<R> {
 }
 
 struct Sealed {
-    key: LessSafeKey,
+    key: Aes256Gcm,
     header: [u8; HEADER],
     /// The chunk held in `plain`.
     held: Option<u64>,
@@ -298,9 +309,7 @@ impl<R: Read + Seek> Read for Reader<R> {
             self.inner.seek(SeekFrom::Start(HEADER as u64 + chunk * (CHUNK + TAG) as u64))?;
             self.inner.read_exact(&mut s.plain)?;
             s.held = None;
-            s.key
-                .open_in_place(nonce(chunk), Aad::from(&s.header), &mut s.plain)
-                .map_err(|_| invalid("authentication"))?;
+            open_chunk(&s.key, chunk, &s.header, &mut s.plain)?;
             s.plain.truncate(n);
             s.held = Some(chunk);
         }

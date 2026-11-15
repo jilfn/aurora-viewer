@@ -533,13 +533,17 @@ dependencies = [
 name = "aurora-assets"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "aurora-llsd",
  "base64 0.23.1",
  "cc",
  "crossbeam-channel",
  "flate2",
+ "getrandom 0.4.3",
  "glam 0.34.1",
  "hayro-jpeg2000",
+ "hkdf",
+ "hmac 0.13.0",
  "image",
  "log",
  "meshopt-pure",
@@ -548,8 +552,8 @@ dependencies = [
  "parking_lot 0.13.0",
  "parry3d",
  "rayon",
- "ring",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "uuid",
  "zvidlib-vorbis-encoder",
