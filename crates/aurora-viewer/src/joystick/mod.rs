@@ -3,6 +3,7 @@
 //! originally LGPL 2.1). Device I/O lives on a worker; the frame only copies
 //! its latest state. Axis numbers are native, including unmapped joysticks.
 
+#[cfg_attr(not(feature = "joystick"), path = "backend_none.rs")]
 mod backend;
 mod bindings;
 pub mod capture;

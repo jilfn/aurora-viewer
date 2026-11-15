@@ -52,10 +52,10 @@ encoding_rs = "0.8.42"
 env_logger = "0.11.11"
 glam = "0.34.1"
 # Native raw joystick axes (including unmapped flight sticks), MIT / Apache-2.0.
-gilrs-core = "0.6.8"
+gilrs-core = { version = "0.6.8", optional = true }
 # SpaceMouse HID reports, independently of gamepad mappings; MIT wrapper,
 # bundled HIDAPI under BSD-3-Clause.
-hidapi = "2.6.7"
+hidapi = { version = "2.6.7", optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tga", "gif", "webp"] }
 log = "0.4.34"
 # photos written row by row with their progress (the PNG encoder of image,
@@ -178,6 +178,9 @@ winresource = { version = "0.1.34", default-features = false }
 # fork: the global allocator (C), for the viewer's own binary: off by default,
 # a program built on the library keeps its own allocator.
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
+# fork: joysticks, gamepads and 3D mice (hidapi is C): off by default, no
+# device is then ever listed (joystick/backend_none.rs).
+joystick = ["dep:gilrs-core", "dep:hidapi"]
 # The Khronos OpenXR loader built into the exe (needs CMake): the published
 # Windows viewer (release.yml); local builds load the runtime's loader.
 xr-static-loader = ["aurora-render/xr-static-loader"]
