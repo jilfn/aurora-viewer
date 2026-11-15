@@ -150,7 +150,7 @@ mod stand_fly;
 mod stream_list;
 mod suggest_demo;
 mod task_notecards;
-mod teleport_lookup;
+pub mod teleport_lookup;
 mod teleport_screen;
 mod texture_library;
 mod texture_refresh;

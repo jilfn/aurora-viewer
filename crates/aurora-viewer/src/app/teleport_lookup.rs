@@ -6,7 +6,7 @@ use glam::Vec3;
 use uuid::Uuid;
 
 #[derive(Default)]
-pub(super) struct NamedTeleport {
+pub struct NamedTeleport {
     pending: Option<Pending>,
 }
 
