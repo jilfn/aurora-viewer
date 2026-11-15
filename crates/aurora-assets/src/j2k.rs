@@ -16,8 +16,7 @@
 //!   are converted to 8-bit full-resolution samples (LL assumes 8-bit unsigned).
 //! - At most 4 components are returned (LL's `max_channel_count`).
 
-use std::ffi::{CStr, c_char, c_void};
-use std::ptr;
+use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use openjpeg_sys as opj;
@@ -612,84 +611,6 @@ fn calc_data_size_j2c(w: i64, h: i64, discard_level: i64, rate: f32) -> usize {
 // OpenJPEG FFI wrapper
 // ---------------------------------------------------------------------------
 
-/// In-memory input stream state (port of `JPEG2KBase` + `opj_read/skip/seek`).
-struct MemStream<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-unsafe extern "C" fn mem_read(buffer: *mut c_void, nb_bytes: usize, user: *mut c_void) -> usize {
-    if user.is_null() || buffer.is_null() {
-        return usize::MAX;
-    }
-    // SAFETY: `user` is the `MemStream` registered with `opj_stream_set_user_data`;
-    // it lives on the stack of `decode_j2k` for longer than the stream and is only
-    // accessed from this (single) decoding thread.
-    let s = unsafe { &mut *(user as *mut MemStream<'_>) };
-    if s.offset >= s.data.len() {
-        s.offset = s.data.len();
-        return usize::MAX; // (OPJ_SIZE_T)-1: end of stream
-    }
-    let to_read = nb_bytes.min(s.data.len() - s.offset);
-    // SAFETY: OpenJPEG guarantees `buffer` is writable for `nb_bytes` bytes, and
-    // `to_read <= nb_bytes`; the source range is in bounds of `s.data` by the check above.
-    unsafe {
-        ptr::copy_nonoverlapping(s.data.as_ptr().add(s.offset), buffer as *mut u8, to_read);
-    }
-    s.offset += to_read;
-    to_read
-}
-
-unsafe extern "C" fn mem_skip(nb_bytes: i64, user: *mut c_void) -> i64 {
-    if user.is_null() {
-        return -1;
-    }
-    // SAFETY: see `mem_read`.
-    let s = unsafe { &mut *(user as *mut MemStream<'_>) };
-    let len = s.data.len() as i64;
-    let new_offset = (s.offset as i64).saturating_add(nb_bytes);
-    if new_offset < 0 || new_offset > len {
-        s.offset = new_offset.clamp(0, len) as usize;
-        return -1;
-    }
-    s.offset = new_offset as usize;
-    nb_bytes
-}
-
-unsafe extern "C" fn mem_seek(offset: i64, user: *mut c_void) -> opj::OPJ_BOOL {
-    if user.is_null() {
-        return 0;
-    }
-    // SAFETY: see `mem_read`.
-    let s = unsafe { &mut *(user as *mut MemStream<'_>) };
-    if offset < 0 || offset > s.data.len() as i64 {
-        return 0;
-    }
-    s.offset = offset as usize;
-    1
-}
-
-fn log_opj_message(level: log::Level, msg: *const c_char) {
-    if msg.is_null() || !log::log_enabled!(target: "aurora_assets::j2k", level) {
-        return;
-    }
-    // SAFETY: OpenJPEG passes a valid NUL-terminated C string that outlives the callback.
-    let text = unsafe { CStr::from_ptr(msg) };
-    log::log!(target: "aurora_assets::j2k", level, "OpenJPEG: {}", text.to_string_lossy().trim_end());
-}
-
-unsafe extern "C" fn opj_error_cb(msg: *const c_char, _: *mut c_void) {
-    log_opj_message(log::Level::Debug, msg);
-}
-
-unsafe extern "C" fn opj_warning_cb(msg: *const c_char, _: *mut c_void) {
-    log_opj_message(log::Level::Trace, msg);
-}
-
-unsafe extern "C" fn opj_info_cb(msg: *const c_char, _: *mut c_void) {
-    log_opj_message(log::Level::Trace, msg);
-}
-
 struct StreamGuard(*mut opj::opj_stream_t);
 impl Drop for StreamGuard {
     fn drop(&mut self) {
@@ -723,10 +644,10 @@ impl Drop for ImageGuard {
 
 /// Decode a J2K codestream (or JP2 file) at the given discard level.
 ///
-/// `discard` is used as OpenJPEG `cp_reduce` and is clamped to the number of
+/// `discard` is the number of resolution levels left out, clamped to the number of
 /// decomposition levels. Truncated codestreams (partial HTTP range fetches)
 /// are decoded as far as possible (non-strict mode). Each call uses its own
-/// codec instance, so this is safe to call concurrently.
+/// decoder context, so this is safe to call concurrently.
 pub fn decode_j2k(data: &[u8], discard: u8) -> Result<DecodedImage, AssetError> {
     decode_j2k_timed(data, discard).map(|(img, _)| img)
 }
@@ -734,7 +655,7 @@ pub fn decode_j2k(data: &[u8], discard: u8) -> Result<DecodedImage, AssetError> 
 /// Where the time of one decode went ([`decode_j2k_timed`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DecodeTimings {
-    /// OpenJPEG: header, entropy decoding, inverse wavelet and colour transforms.
+    /// The decoder (hayro-jpeg2000): header, entropy decoding, inverse wavelet and colour transforms.
     pub codec: Duration,
     /// Planar 32-bit samples to interleaved 8-bit pixels.
     pub convert: Duration,
@@ -763,74 +684,26 @@ pub fn decode_j2k_timed(data: &[u8], discard: u8) -> Result<(DecodedImage, Decod
     let no_tlm = disable_tlm_index(cs)?;
     let cs = no_tlm.as_deref().unwrap_or(cs);
 
-    let mut mem = MemStream { data: cs, offset: 0 };
-
-    // SAFETY: plain FFI constructor; null is checked below.
-    let stream = StreamGuard(unsafe { opj::opj_stream_create(cs.len().clamp(4096, 1 << 20), 1) });
-    if stream.0.is_null() {
-        return Err(AssetError::J2k("opj_stream_create failed"));
-    }
-    // SAFETY: `stream.0` is a valid input stream. The user data pointer refers to
-    // `mem`, which is declared before `stream` and therefore dropped after it; no
-    // free function is registered because `mem` is owned by this stack frame.
-    unsafe {
-        opj::opj_stream_set_user_data(stream.0, &mut mem as *mut MemStream<'_> as *mut c_void, None);
-        opj::opj_stream_set_user_data_length(stream.0, cs.len() as u64);
-        opj::opj_stream_set_read_function(stream.0, Some(mem_read));
-        opj::opj_stream_set_skip_function(stream.0, Some(mem_skip));
-        opj::opj_stream_set_seek_function(stream.0, Some(mem_seek));
-    }
-
-    // SAFETY: plain FFI constructor; null is checked below.
-    let codec = CodecGuard(unsafe { opj::opj_create_decompress(opj::CODEC_FORMAT::OPJ_CODEC_J2K) });
-    if codec.0.is_null() {
-        return Err(AssetError::J2k("opj_create_decompress failed"));
-    }
-
-    // SAFETY: `opj_dparameters_t` is a plain C struct (integers and char arrays) for
-    // which all-zero is a valid bit pattern; it is then initialised by OpenJPEG.
-    let mut params: opj::opj_dparameters_t = unsafe { std::mem::zeroed() };
-    // SAFETY: `params` is a valid, exclusively borrowed parameter struct.
-    unsafe { opj::opj_set_default_decoder_parameters(&mut params) };
-    params.cp_reduce = u32::from(reduce);
-
-    // SAFETY: `codec.0` is a valid decompressor; the callbacks are `extern "C"`
-    // functions that ignore their (null) client data.
-    let setup_ok = unsafe {
-        opj::opj_set_error_handler(codec.0, Some(opj_error_cb), ptr::null_mut());
-        opj::opj_set_warning_handler(codec.0, Some(opj_warning_cb), ptr::null_mut());
-        opj::opj_set_info_handler(codec.0, Some(opj_info_cb), ptr::null_mut());
-        let ok = opj::opj_setup_decoder(codec.0, &mut params);
-        // Enable decoding of partially loaded images, as LLImageJ2COJ does.
-        opj::opj_decoder_set_strict_mode(codec.0, 0);
-        ok
+    // hayro takes the size to decode to and skips min(log2(w / tw), log2(h / th))
+    // levels: exactly `reduce` unless a side is shorter than 2^reduce (then
+    // fewer, and `DecodedImage::discard` says so).
+    let settings = hayro_jpeg2000::DecodeSettings {
+        target_resolution: Some(((info.width >> reduce).max(1), (info.height >> reduce).max(1))),
+        // Partially loaded images are decoded as far as they go, as LLImageJ2COJ does.
+        strict: false,
+        ..Default::default()
     };
-    if setup_ok == 0 {
-        return Err(AssetError::J2k("opj_setup_decoder failed"));
-    }
-
-    let mut image = ImageGuard(ptr::null_mut());
-    // SAFETY: stream and codec are valid; `image.0` receives an OpenJPEG-owned image
-    // (or stays null) which the guard destroys.
-    let header_ok = unsafe { opj::opj_read_header(stream.0, codec.0, &mut image.0) };
-    if header_ok == 0 || image.0.is_null() {
-        return Err(AssetError::J2k("opj_read_header failed"));
-    }
-
-    // SAFETY: stream, codec and image are valid and belong to this call.
-    let decoded = unsafe { opj::opj_decode(codec.0, stream.0, image.0) };
-    // SAFETY: as above. The result is ignored like in LL: it fails for truncated
-    // streams even though the decoded data is usable.
-    unsafe { opj::opj_end_decompress(codec.0, stream.0) };
-    if decoded == 0 {
-        return Err(AssetError::J2k("opj_decode failed"));
-    }
-
-    // SAFETY: `image.0` is non-null and points to an image fully initialised by
-    // `opj_read_header`/`opj_decode`; it is not mutated while borrowed.
-    let img = unsafe { &*image.0 };
+    let image = hayro_jpeg2000::Image::new(cs, &settings).map_err(|e| {
+        log::debug!(target: "aurora_assets::j2k", "JPEG2000 header: {e}");
+        AssetError::J2k("JPEG2000 header refused")
+    })?;
+    let mut context = hayro_jpeg2000::DecoderContext::default();
+    let decoded = image.decode(&mut context).map_err(|e| {
+        log::debug!(target: "aurora_assets::j2k", "JPEG2000 decode: {e}");
+        AssetError::J2k("JPEG2000 decode failed")
+    })?;
     let codec = start.elapsed();
-    let out = convert_image(img, &siz, reduce)?;
+    let out = convert_image(&decoded, (image.width(), image.height()), &siz, reduce)?;
     let convert = start.elapsed().saturating_sub(codec);
     Ok((out, DecodeTimings { codec, convert }))
 }
@@ -850,75 +723,50 @@ fn component_size(siz: &Siz, sub: (u8, u8), reduce: u8) -> (u64, u64) {
     (span(siz.x0, siz.x1, sub.0), span(siz.y0, siz.y1, sub.1))
 }
 
-/// Convert OpenJPEG component planes to interleaved 8-bit pixels. The
+/// Convert the decoder's component planes to interleaved 8-bit pixels. The
 /// components are checked against the codestream's own SIZ (`siz`, decoded
-/// at `reduce`) before their planes are read: the same component count, and
-/// planes no larger than the SIZ gives them.
-fn convert_image(img: &opj::opj_image_t, siz: &Siz, reduce: u8) -> Result<DecodedImage, AssetError> {
-    if img.numcomps == 0 || img.comps.is_null() {
+/// at `reduce` at most) before their planes are read: the same component
+/// count, and planes of the image's size, no larger than the SIZ gives it.
+fn convert_image(
+    img: &hayro_jpeg2000::DecodedImage<'_>,
+    (width, height): (u32, u32),
+    siz: &Siz,
+    reduce: u8,
+) -> Result<DecodedImage, AssetError> {
+    let comps = img.components();
+    if comps.is_empty() {
         return Err(AssetError::J2k("decoded image has no components"));
     }
-    if img.numcomps as usize != siz.sub.len() {
+    if comps.len() != siz.sub.len() {
         return Err(AssetError::J2k("decoded component count differs from the header"));
     }
-    // SAFETY: OpenJPEG allocates `numcomps` contiguous `opj_image_comp_t` at `comps`.
-    let comps = unsafe { std::slice::from_raw_parts(img.comps, img.numcomps as usize) };
-    let used = &comps[..comps.len().min(4)];
-
-    let mut width = 0u32;
-    let mut height = 0u32;
-    for (c, &sub) in used.iter().zip(&siz.sub) {
-        if c.data.is_null() || c.w == 0 || c.h == 0 {
-            return Err(AssetError::J2k("decoded component has no data"));
-        }
-        let (max_w, max_h) = component_size(siz, sub, reduce);
-        if u64::from(c.w) > max_w || u64::from(c.h) > max_h {
-            return Err(AssetError::J2k("decoded component larger than its header"));
-        }
-        width = width.max(c.w);
-        height = height.max(c.h);
+    if width == 0 || height == 0 {
+        return Err(AssetError::J2k("decoded component has no data"));
     }
     if width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err(AssetError::TooLarge("decoded JPEG2000 dimensions"));
     }
+    // The levels really skipped: the largest reduction whose size is the image's.
+    let size_at = |r: u8| component_size(siz, (1, 1), r);
+    let discard = (0..=reduce).rev().find(|&r| size_at(r) == (u64::from(width), u64::from(height)));
+    let Some(discard) = discard else {
+        return Err(AssetError::J2k("decoded component larger than its header"));
+    };
+    let used = &comps[..comps.len().min(4)];
     let n = used.len();
     let pixels = width as usize * height as usize;
+    if used.iter().any(|c| c.samples().len() != pixels) {
+        return Err(AssetError::J2k("decoded component has no data"));
+    }
     let mut out = vec![0u8; pixels * n];
-
-    for (ci, c) in used.iter().enumerate() {
-        let cw = c.w as usize;
-        let ch = c.h as usize;
-        // SAFETY: `data` is non-null and OpenJPEG allocates `w * h` samples for
-        // each decoded component (dimensions already reduced by the resolution
-        // factor); `w` and `h` were checked above against the SIZ, so the
-        // slice never spans more than the header's own component size.
-        let plane = unsafe { std::slice::from_raw_parts(c.data as *const i32, cw * ch) };
-        let prec = c.prec.clamp(1, 31);
-        let offset: i64 = if c.sgnd != 0 { 1i64 << (prec - 1) } else { 0 };
-        let max_in = (1i64 << prec) - 1;
-        let to8 = |v: i32| -> u8 {
-            let v = (v as i64 + offset).clamp(0, max_in);
-            let v = match prec.cmp(&8) {
-                std::cmp::Ordering::Equal => v,
-                std::cmp::Ordering::Greater => v >> (prec - 8),
-                std::cmp::Ordering::Less => (v * 255 + max_in / 2) / max_in,
-            };
-            v.clamp(0, 255) as u8
-        };
-        let full = cw == width as usize && ch == height as usize;
-        for y in 0..height as usize {
-            let sy = if full { y } else { (y * ch / height as usize).min(ch - 1) };
-            let src_row = &plane[sy * cw..sy * cw + cw];
-            let dst_row = &mut out[y * width as usize * n..(y + 1) * width as usize * n];
-            if full {
-                for (x, &v) in src_row.iter().enumerate() {
-                    dst_row[x * n + ci] = to8(v);
-                }
-            } else {
-                for x in 0..width as usize {
-                    let sx = (x * cw / width as usize).min(cw - 1);
-                    dst_row[x * n + ci] = to8(src_row[sx]);
-                }
+    if comps.len() == n {
+        img.store_u8_into(&mut out);
+    } else {
+        // More than 4 components (a 5-component bake): the first 4, as LL's max_channel_count.
+        for (ci, c) in used.iter().enumerate() {
+            let scale = 255.0 / ((1u64 << c.bit_depth().clamp(1, 31)) - 1) as f32;
+            for (px, &v) in out.chunks_exact_mut(n).zip(c.samples()) {
+                px[ci] = (v * scale + 0.5).clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -928,7 +776,7 @@ fn convert_image(img: &opj::opj_image_t, siz: &Siz, reduce: u8) -> Result<Decode
         height,
         components: n as u8,
         data: out,
-        discard: comps[0].factor.min(255) as u8,
+        discard,
     })
 }
 
@@ -1091,6 +939,19 @@ mod tests {
         let img = decode_j2k(&enc, 0).expect("rgba");
         assert_eq!(img.components, 4);
         assert_eq!(img.data[(7 * 32 + 9) * 4 + 3], pattern(9, 7, 3));
+    }
+
+    /// A bake with 5 components: the first 4 are returned (LL's max_channel_count).
+    #[test]
+    fn decode_five_components() {
+        let enc = encode(32, 32, 5, pattern);
+        assert_eq!(j2k_info(&enc).expect("info").components, 5);
+        let img = decode_j2k(&enc, 0).expect("5 components");
+        assert_eq!((img.components, img.data.len()), (4, 32 * 32 * 4));
+        for (i, px) in img.data.chunks_exact(4).enumerate() {
+            let (x, y) = (i as u32 % 32, i as u32 / 32);
+            assert_eq!(px, [0, 1, 2, 3].map(|c| pattern(x, y, c)));
+        }
     }
 
     #[test]

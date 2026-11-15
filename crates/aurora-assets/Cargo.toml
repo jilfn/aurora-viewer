@@ -13,6 +13,8 @@ flate2 = "1.1.10"
 glam = "0.34.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "tga", "jpeg", "bmp"] }
 log = "0.4.34"
+# JPEG2000 decoding (j2k.rs), pure Rust; simd: its SIMD paths (fearless_simd, pure Rust too)
+hayro-jpeg2000 = { version = "0.5.0", default-features = false, features = ["simd"] }
 openjpeg-sys = "1.0.12"
 parking_lot = "0.13.0"
 rayon = "1.12.0"
