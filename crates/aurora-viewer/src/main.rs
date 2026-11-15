@@ -349,3 +349,15 @@ fn run_viewer() -> anyhow::Result<()> {
     result?;
     Ok(())
 }
+
+// fork: the tests make HTTP clients without `main` having run: the crypto
+// provider is installed before they run (Linux).
+#[cfg(all(test, target_os = "linux"))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static INSTALL_CRYPTO: extern "C" fn() = {
+    extern "C" fn install() {
+        aurora_net::install_crypto();
+    }
+    install
+};
