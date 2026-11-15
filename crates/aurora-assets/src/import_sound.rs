@@ -3,7 +3,6 @@
 //! Decode bounded RIFF chunks without trusting the declared container size.
 
 use crate::AssetError;
-use std::num::{NonZeroU8, NonZeroU32};
 
 #[derive(Debug, Clone)]
 pub struct Sound {
@@ -19,23 +18,37 @@ impl Sound {
         if self.mono.is_empty() || self.mono.len() > 44100 * 60 || !self.mono.iter().all(|n| n.is_finite()) {
             return Err(AssetError::invalid("invalid PCM samples"));
         }
+        // The encoder is a Rust port of libvorbis 1.3.7's (quality as its
+        // base_quality: 0.05 is oggenc's -q 0.5); the `ogg` crate pages its packets.
+        let fail = |e: &dyn std::fmt::Display| AssetError::invalid(e.to_string());
+        let mut encoder = zvidlib_vorbis_encoder::vorbis_encoder::VorbisEncoder::new(44100, 1, 0.05).map_err(|e| fail(&e))?;
         let mut output = Vec::new();
         {
-            // Constants are nonzero by construction; no external values here.
-            let mut builder = vorbis_rs::VorbisEncoderBuilder::new(
-                NonZeroU32::new(44100).expect("constant sample rate"),
-                NonZeroU8::new(1).expect("mono"),
-                &mut output,
-            )
-            .map_err(|e| AssetError::invalid(e.to_string()))?;
-            builder.bitrate_management_strategy(vorbis_rs::VorbisBitrateManagementStrategy::QualityVbr { target_quality: 0.05 });
-            let mut encoder = builder.build().map_err(|e| AssetError::invalid(e.to_string()))?;
-            for chunk in self.mono.chunks(4096) {
-                encoder
-                    .encode_audio_block([chunk])
-                    .map_err(|e| AssetError::invalid(e.to_string()))?;
+            use ogg::writing::PacketWriteEndInfo::{EndPage, EndStream, NormalPacket};
+            const SERIAL: u32 = 0x4155_524F;
+            let mut pages = ogg::writing::PacketWriter::new(&mut output);
+            // The identification header alone on the first page, the audio from a fresh one.
+            let [identification, comment, setup] = encoder.headers("Aurora Viewer (libVorbis 1.3.7 in Rust)");
+            for (header, end) in [(identification, EndPage), (comment, NormalPacket), (setup, EndPage)] {
+                pages.write_packet(header, SERIAL, end, 0).map_err(|e| fail(&e))?;
             }
-            encoder.finish().map_err(|e| AssetError::invalid(e.to_string()))?;
+            let mut packets = encoder.encode(&self.mono).map_err(|e| fail(&e))?;
+            packets.extend(encoder.finish().map_err(|e| fail(&e))?);
+            let last = packets.len().saturating_sub(1);
+            // Pages of about 4 kB, as libogg's ogg_stream_pageout cuts them.
+            let mut page = 0;
+            for (i, (packet, granule)) in packets.into_iter().enumerate() {
+                page += packet.len();
+                let end = match page {
+                    _ if i == last => EndStream,
+                    4096.. => EndPage,
+                    _ => NormalPacket,
+                };
+                if end == EndPage {
+                    page = 0;
+                }
+                pages.write_packet(packet, SERIAL, end, granule).map_err(|e| fail(&e))?;
+            }
         }
         Ok(output)
     }

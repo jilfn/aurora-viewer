@@ -233,16 +233,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "aotuv_lancer_vorbis_sys"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bc4fd1a61860d2f1198b60bedd30910eaffa978f1ee6214dfb24ac70d589225"
-dependencies = [
- "cc",
- "ogg_next_sys",
-]
-
-[[package]]
 name = "apple-native-keyring-store"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -553,6 +543,7 @@ dependencies = [
  "image",
  "log",
  "meshopt",
+ "ogg",
  "openjp2",
  "parking_lot 0.13.0",
  "parry3d",
@@ -561,7 +552,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "uuid",
- "vorbis_rs",
+ "zvidlib-vorbis-encoder",
 ]
 
 [[package]]
@@ -4354,12 +4345,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "ogg_next_sys"
-version = "0.1.5"
+name = "ogg"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed2d7a48e247c2bb07e633aefb65a38648ea58c7eedd4e4408a5861721ab049b"
+checksum = "fdab8dcd8d4052eaacaf8fb07a3ccd9a6e26efadb42878a413c68fc4af1dee2b"
 dependencies = [
- "cc",
+ "byteorder",
 ]
 
 [[package]]
@@ -7320,20 +7311,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vorbis_rs"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49c5da94d280f7a27e8c937e9b73df2da3e23a2583f48471fd8fb4c72f9c1933"
-dependencies = [
- "aotuv_lancer_vorbis_sys",
- "errno",
- "getrandom 0.4.3",
- "ogg_next_sys",
- "thiserror 2.0.21",
- "tinyvec",
-]
-
-[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8573,4 +8550,29 @@ dependencies = [
  "serde",
  "syn 3.0.6",
  "winnow",
+]
+
+[[package]]
+name = "zvidlib-core"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "568189ce764b4890342f24ed013595066b6beb0d8e30af37bb755fafae074b90"
+
+[[package]]
+name = "zvidlib-vorbis-encoder"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f9aa22c698b475c47e240ad778bbd027a69a26927c000258973cac78539d227"
+dependencies = [
+ "zvidlib-core",
+ "zvidlib-vorbis-syntax",
+]
+
+[[package]]
+name = "zvidlib-vorbis-syntax"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a17c521504be43d9123b0da8a6c028e2078900a44715fc673f27e26f0c95608c"
+dependencies = [
+ "zvidlib-core",
 ]
