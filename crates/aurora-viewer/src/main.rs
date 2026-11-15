@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod agent;
+#[cfg_attr(not(feature = "mimalloc"), path = "allocator_system.rs")]
 mod allocator;
 mod alt_codes;
 mod ao;

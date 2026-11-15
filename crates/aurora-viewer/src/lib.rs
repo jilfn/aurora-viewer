@@ -3,6 +3,7 @@
 #![allow(dead_code, unused_imports)] // (the program's entry in main.rs is what uses some of it)
 
 pub mod agent;
+#[path = "allocator_system.rs"] // a library does not set the program's allocator
 pub mod allocator;
 pub mod alt_codes;
 pub mod ao;
