@@ -16,10 +16,7 @@
 //!   are converted to 8-bit full-resolution samples (LL assumes 8-bit unsigned).
 //! - At most 4 components are returned (LL's `max_channel_count`).
 
-use std::ffi::c_void;
 use std::time::{Duration, Instant};
-
-use openjpeg_sys as opj;
 
 use crate::AssetError;
 mod encode;
@@ -607,41 +604,6 @@ fn calc_data_size_j2c(w: i64, h: i64, discard_level: i64, rate: f32) -> usize {
     est.clamp(0, i32::MAX as i64) as usize
 }
 
-// ---------------------------------------------------------------------------
-// OpenJPEG FFI wrapper
-// ---------------------------------------------------------------------------
-
-struct StreamGuard(*mut opj::opj_stream_t);
-impl Drop for StreamGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the pointer came from `opj_stream_create` and is destroyed exactly once.
-            unsafe { opj::opj_stream_destroy(self.0) }
-        }
-    }
-}
-
-struct CodecGuard(*mut opj::opj_codec_t);
-impl Drop for CodecGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the pointer came from `opj_create_decompress` and is destroyed exactly once.
-            unsafe { opj::opj_destroy_codec(self.0) }
-        }
-    }
-}
-
-struct ImageGuard(*mut opj::opj_image_t);
-impl Drop for ImageGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the image was allocated by OpenJPEG (`opj_read_header`) and is
-            // destroyed exactly once, after which nothing references it.
-            unsafe { opj::opj_image_destroy(self.0) }
-        }
-    }
-}
-
 /// Decode a J2K codestream (or JP2 file) at the given discard level.
 ///
 /// `discard` is the number of resolution levels left out, clamped to the number of
@@ -784,109 +746,37 @@ fn convert_image(
 mod tests {
     use super::*;
 
-    struct VecWriter {
-        buf: Vec<u8>,
-        pos: usize,
-    }
-
-    unsafe extern "C" fn w_write(buffer: *mut c_void, n: usize, user: *mut c_void) -> usize {
-        // SAFETY: `user` is the VecWriter owned by `encode`, alive for the whole encode.
-        let w = unsafe { &mut *(user as *mut VecWriter) };
-        // SAFETY: OpenJPEG provides `n` readable bytes at `buffer`.
-        let src = unsafe { std::slice::from_raw_parts(buffer as *const u8, n) };
-        let end = w.pos + n;
-        if w.buf.len() < end {
-            w.buf.resize(end, 0);
-        }
-        w.buf[w.pos..end].copy_from_slice(src);
-        w.pos = end;
-        n
-    }
-
-    unsafe extern "C" fn w_skip(n: i64, user: *mut c_void) -> i64 {
-        // SAFETY: see `w_write`.
-        let w = unsafe { &mut *(user as *mut VecWriter) };
-        let new = w.pos as i64 + n;
-        if new < 0 {
-            return -1;
-        }
-        w.pos = new as usize;
-        if w.buf.len() < w.pos {
-            w.buf.resize(w.pos, 0);
-        }
-        n
-    }
-
-    unsafe extern "C" fn w_seek(off: i64, user: *mut c_void) -> opj::OPJ_BOOL {
-        // SAFETY: see `w_write`.
-        let w = unsafe { &mut *(user as *mut VecWriter) };
-        if off < 0 {
-            return 0;
-        }
-        w.pos = off as usize;
-        if w.buf.len() < w.pos {
-            w.buf.resize(w.pos, 0);
-        }
-        1
-    }
-
     /// Lossless J2K encode (test helper, mirrors JPEG2KEncode in llimagej2coj.cpp).
     fn encode(w: u32, h: u32, comps: u32, pixel: impl Fn(u32, u32, u32) -> u8) -> Vec<u8> {
-        // SAFETY: test-only FFI usage; every pointer is checked and freed below.
-        unsafe {
-            let mut params: opj::opj_cparameters_t = std::mem::zeroed();
-            opj::opj_set_default_encoder_parameters(&mut params);
-            params.tcp_numlayers = 1;
-            params.tcp_rates[0] = 0.0;
-            params.cp_disto_alloc = 1;
-            params.irreversible = 0;
-            params.tcp_mct = if comps >= 3 { 1 } else { 0 };
-            // Like JPEG2KEncode: small images need fewer resolutions.
-            params.numresolution = params.numresolution.min(1 + w.min(h).ilog2() as i32);
-            let mut cparms: Vec<opj::opj_image_cmptparm_t> = (0..comps)
-                .map(|_| {
-                    let mut p: opj::opj_image_cmptparm_t = std::mem::zeroed();
-                    p.dx = 1;
-                    p.dy = 1;
-                    p.w = w;
-                    p.h = h;
-                    p.prec = 8;
-                    p.sgnd = 0;
-                    p
-                })
-                .collect();
-            let image = opj::opj_image_create(comps, cparms.as_mut_ptr(), opj::COLOR_SPACE::OPJ_CLRSPC_SRGB);
-            assert!(!image.is_null());
-            (*image).x0 = 0;
-            (*image).y0 = 0;
-            (*image).x1 = w;
-            (*image).y1 = h;
-            for c in 0..comps {
-                let comp = &*(*image).comps.add(c as usize);
-                let plane = std::slice::from_raw_parts_mut(comp.data, (w * h) as usize);
-                for y in 0..h {
-                    for x in 0..w {
-                        plane[(y * w + x) as usize] = pixel(x, y, c) as i32;
-                    }
-                }
-            }
-            let codec = opj::opj_create_compress(opj::CODEC_FORMAT::OPJ_CODEC_J2K);
-            assert!(!codec.is_null());
-            assert!(opj::opj_setup_encoder(codec, &mut params, image) != 0);
-            let mut writer = VecWriter { buf: Vec::new(), pos: 0 };
-            let stream = opj::opj_stream_create(1 << 16, 0);
-            opj::opj_stream_set_user_data(stream, &mut writer as *mut VecWriter as *mut c_void, None);
-            opj::opj_stream_set_write_function(stream, Some(w_write));
-            opj::opj_stream_set_skip_function(stream, Some(w_skip));
-            opj::opj_stream_set_seek_function(stream, Some(w_seek));
-            assert!(opj::opj_start_compress(codec, image, stream) != 0);
-            assert!(opj::opj_encode(codec, stream) != 0);
-            assert!(opj::opj_end_compress(codec, stream) != 0);
-            opj::opj_stream_destroy(stream);
-            opj::opj_destroy_codec(codec);
-            opj::opj_image_destroy(image);
-            writer.buf
-        }
+        let mut settings = openjp2::EncodeParameters::new();
+        let params = settings.low_level();
+        params.tcp_numlayers = 1;
+        params.tcp_rates[0] = 0.0;
+        params.cp_disto_alloc = 1;
+        params.irreversible = 0;
+        params.tcp_mct = if comps >= 3 { 1 } else { 0 };
+        // Like JPEG2KEncode: small images need fewer resolutions.
+        params.numresolution = params.numresolution.min(1 + w.min(h).ilog2() as i32);
+        let planes = (0..comps)
+            .map(|c| openjp2::CoreImageComp {
+                dx: 1,
+                dy: 1,
+                w,
+                h,
+                prec: 8,
+                data: (0..w * h).map(|i| pixel(i % w, i / w, c).into()).collect(),
+                ..Default::default()
+            })
+            .collect();
+        let image = openjp2::Image::from_core_image(openjp2::CoreImage {
+            x1: w,
+            y1: h,
+            numcomps: comps,
+            color_space: openjp2::ColorSpace::Srgb,
+            comps: planes,
+            ..Default::default()
+        });
+        image.encode(settings).expect("encode")
     }
 
     fn pattern(x: u32, y: u32, c: u32) -> u8 {

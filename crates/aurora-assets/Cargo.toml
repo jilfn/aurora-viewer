@@ -15,7 +15,8 @@ image = { version = "0.25.10", default-features = false, features = ["png", "tga
 log = "0.4.34"
 # JPEG2000 decoding (j2k.rs), pure Rust; simd: its SIMD paths (fearless_simd, pure Rust too)
 hayro-jpeg2000 = { version = "0.5.0", default-features = false, features = ["simd"] }
-openjpeg-sys = "1.0.12"
+# JPEG2000 encoding (j2k/encode.rs): the Rust port of OpenJPEG, no C
+openjp2 = { version = "0.7.2", default-features = false }
 parking_lot = "0.13.0"
 rayon = "1.12.0"
 serde_json = "1.0.151"
