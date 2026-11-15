@@ -655,19 +655,52 @@ pub fn decode_j2k_timed(data: &[u8], discard: u8) -> Result<(DecodedImage, Decod
         strict: false,
         ..Default::default()
     };
-    let image = hayro_jpeg2000::Image::new(cs, &settings).map_err(|e| {
-        log::debug!(target: "aurora_assets::j2k", "JPEG2000 header: {e}");
-        AssetError::J2k("JPEG2000 header refused")
+    let hayro = || {
+        let image = hayro_jpeg2000::Image::new(cs, &settings).map_err(|e| {
+            log::debug!(target: "aurora_assets::j2k", "JPEG2000 header: {e}");
+            AssetError::J2k("JPEG2000 header refused")
+        })?;
+        let mut context = hayro_jpeg2000::DecoderContext::default();
+        let decoded = image.decode(&mut context).map_err(|e| {
+            log::debug!(target: "aurora_assets::j2k", "JPEG2000 decode: {e}");
+            AssetError::J2k("JPEG2000 decode failed")
+        })?;
+        let codec = start.elapsed();
+        let out = convert_image(&decoded, (image.width(), image.height()), &siz, reduce)?;
+        Ok((out, DecodeTimings { codec, convert: start.elapsed().saturating_sub(codec) }))
+    };
+    // What hayro refuses goes to OpenJPEG's own decoder; its error is hayro's.
+    hayro().or_else(|e| match decode_openjp2(cs, &siz, reduce) {
+        Ok(out) => Ok((out, DecodeTimings { codec: start.elapsed(), convert: Duration::ZERO })),
+        Err(_) => Err(e),
+    })
+}
+
+/// The decode by openjp2 (the Rust port of OpenJPEG: bit for bit its output, slower than hayro), for a
+/// codestream hayro fails on. Lenient like the first decode; `reduce` levels are left out exactly. Components
+/// that are subsampled or not of the image's size are refused.
+fn decode_openjp2(cs: &[u8], siz: &Siz, reduce: u8) -> Result<DecodedImage, AssetError> {
+    const FAILED: AssetError = AssetError::J2k("JPEG2000 decode failed");
+    let image = openjp2::Image::from_bytes_with(cs, openjp2::DecodeParameters::new().reduce(reduce.into())).map_err(|e| {
+        log::debug!(target: "aurora_assets::j2k", "JPEG2000 decode (openjp2): {e}");
+        FAILED
     })?;
-    let mut context = hayro_jpeg2000::DecoderContext::default();
-    let decoded = image.decode(&mut context).map_err(|e| {
-        log::debug!(target: "aurora_assets::j2k", "JPEG2000 decode: {e}");
-        AssetError::J2k("JPEG2000 decode failed")
-    })?;
-    let codec = start.elapsed();
-    let out = convert_image(&decoded, (image.width(), image.height()), &siz, reduce)?;
-    let convert = start.elapsed().saturating_sub(codec);
-    Ok((out, DecodeTimings { codec, convert }))
+    let (comps, width, height) = (image.components(), image.width(), image.height());
+    let pixels = width as usize * height as usize;
+    let n = comps.len().min(4);
+    let sized = component_size(siz, (1, 1), reduce) == (u64::from(width), u64::from(height));
+    if pixels == 0 || comps.len() != siz.sub.len() || !sized || comps[..n].iter().any(|c| c.data.len() != pixels) {
+        return Err(FAILED);
+    }
+    let mut data = vec![0u8; pixels * n];
+    for (ci, c) in comps[..n].iter().enumerate() {
+        let max = (1i64 << c.prec.clamp(1, 31)) - 1;
+        let zero = if c.sgnd != 0 { (max + 1) / 2 } else { 0 };
+        for (px, &v) in data.chunks_exact_mut(n).zip(&c.data) {
+            px[ci] = (((i64::from(v) + zero).clamp(0, max) * 255 + max / 2) / max) as u8;
+        }
+    }
+    Ok(DecodedImage { width, height, components: n as u8, data, discard: reduce })
 }
 
 /// Width and height of a component of subsampling `sub` decoded at
@@ -841,6 +874,18 @@ mod tests {
         for (i, px) in img.data.chunks_exact(4).enumerate() {
             let (x, y) = (i as u32 % 32, i as u32 / 32);
             assert_eq!(px, [0, 1, 2, 3].map(|c| pattern(x, y, c)));
+        }
+    }
+
+    /// The fallback decoder gives hayro's image (within 1 a sample), whole, reduced and cut short.
+    #[test]
+    fn the_fallback_decoder_agrees() {
+        let enc = encode_texture_j2k(64, 64, 4, &(0..64 * 64 * 4u32).map(|i| pattern(i / 4 % 64, i / 256, i % 4)).collect::<Vec<_>>(), false).expect("encode");
+        for (data, reduce) in [(&enc[..], 0), (&enc[..], 2), (&enc[..enc.len() / 2], 0)] {
+            let siz = check_decode_memory(data, reduce).expect("layout");
+            let (first, second) = (decode_j2k(data, reduce).expect("hayro"), decode_openjp2(data, &siz, reduce).expect("openjp2"));
+            assert_eq!((first.width, first.height, first.components, first.discard), (second.width, second.height, second.components, second.discard));
+            assert!(first.data.iter().zip(&second.data).all(|(a, b)| a.abs_diff(*b) <= 1));
         }
     }
 
