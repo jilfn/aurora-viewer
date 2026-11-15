@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+# The modules as a library too (src/lib.rs), for oniLife.
+[lib]
+name = "aurora_viewer"
+path = "src/lib.rs"
+
 [dependencies]
 aurora-updater = { version = "0.1.0", path = "../aurora-updater" }
 aurora-i18n = { version = "0.1.0", path = "../aurora-i18n" }
