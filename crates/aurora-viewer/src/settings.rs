@@ -2698,8 +2698,20 @@ pub fn config_dir() -> PathBuf {
     for_mode(default_config_root())
 }
 
+/// A program built on these modules as a library (oniLife) keeps its files in its own folders, not Aurora's:
+/// the settings root and the cache root, set once before anything reads them.
+static HOST_ROOTS: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+/// Sets the settings and cache roots used in place of Aurora's own. False if they were already set.
+pub fn set_roots(config: PathBuf, cache: PathBuf) -> bool {
+    HOST_ROOTS.set((config, cache)).is_ok()
+}
+
 /// The settings folder before the demo's subfolder.
 pub(crate) fn default_config_root() -> PathBuf {
+    if let Some((config, _)) = HOST_ROOTS.get() {
+        return config.clone();
+    }
     directories::ProjectDirs::from("org", "Aurora", "AuroraViewer")
         .map(|d| d.config_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
@@ -2742,6 +2754,9 @@ pub fn asset_cache_dir() -> PathBuf {
 }
 
 pub(crate) fn default_cache_root() -> PathBuf {
+    if let Some((_, cache)) = HOST_ROOTS.get() {
+        return cache.clone();
+    }
     directories::ProjectDirs::from("org", "Aurora", "AuroraViewer")
         .map(|d| d.cache_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("cache"))
