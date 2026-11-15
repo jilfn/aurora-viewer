@@ -26,6 +26,7 @@ use aurora_llsd::{Llsd, LlsdError};
 use glam::Mat4;
 
 use crate::AssetError;
+use crate::meshopt;
 
 /// `MAX_MESH_VERSION` from `llmeshrepository.cpp`.
 pub const MAX_MESH_VERSION: i32 = 999;

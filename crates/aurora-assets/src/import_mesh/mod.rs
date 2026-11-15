@@ -14,7 +14,7 @@ pub mod skin;
 mod tests;
 mod vhacd;
 
-use crate::{AssetError, PbrMaterial};
+use crate::{AssetError, PbrMaterial, meshopt};
 use glam::{Mat4, Vec3};
 
 #[derive(Debug, Clone)]

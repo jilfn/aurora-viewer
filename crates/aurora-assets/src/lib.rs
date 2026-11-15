@@ -27,6 +27,7 @@ pub mod llm;
 pub mod material;
 pub mod mesh;
 pub mod mesh_physics;
+mod meshopt;
 pub mod sealed;
 pub mod skeleton;
 pub mod wearable;
