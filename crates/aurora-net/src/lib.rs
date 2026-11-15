@@ -125,6 +125,25 @@ pub enum NetError {
     Http(String),
 }
 
+/// fork: RustCrypto as the process's rustls crypto provider, unless one is
+/// installed already. reqwest is built without a provider of its own, so this
+/// runs before any client is made without `tls_backend_preconfigured`.
+pub fn install_crypto() {
+    let _ = rustls_rustcrypto::provider().install_default();
+}
+
+// fork: the tests make clients on their own, with no `NetClient`: installed
+// before they run (Linux, where the fork's tests are run).
+#[cfg(all(test, target_os = "linux"))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static INSTALL_CRYPTO: extern "C" fn() = {
+    extern "C" fn install() {
+        install_crypto();
+    }
+    install
+};
+
 /// The TLS configuration of every client that talks to the simulator side
 /// (capabilities, assets, bridge, release notes): sim_tls.rs has the rules.
 pub(crate) fn simulator_tls() -> Result<rustls::ClientConfig, NetError> {
@@ -180,6 +199,7 @@ fn asset_limits(mode: AssetConnections, fixed: Option<usize>) -> (Option<usize>,
 
 impl NetClient {
     pub fn new(asset_connections: AssetConnections) -> Result<NetClient, NetError> {
+        install_crypto();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(3)
             .thread_name("aurora-net")

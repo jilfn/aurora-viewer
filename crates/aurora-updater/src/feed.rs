@@ -117,6 +117,8 @@ impl Source {
     }
 
     pub fn client(&self) -> Result<Client> {
+        // fork: reqwest has no crypto provider of its own (as aurora_net::install_crypto)
+        let _ = rustls_rustcrypto::provider().install_default();
         let source = self.clone();
         let builder = Client::builder()
             .user_agent(aurora_version::user_agent())

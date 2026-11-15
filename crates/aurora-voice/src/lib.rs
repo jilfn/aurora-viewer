@@ -111,7 +111,7 @@ impl VoiceSession {
         // webrtc's DTLS takes its own provider, the other rustls users do
         // not. Install aws-lc-rs unless the application already chose one.
         if rustls::crypto::CryptoProvider::get_default().is_none() {
-            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+            let _ = rustls_rustcrypto::provider().install_default();
         }
         let shared = Arc::new(Shared::new());
         let agent_id = params.agent_id;
@@ -354,3 +354,15 @@ mod tests {
         assert!(shared.tx.mic.lock().is_none());
     }
 }
+
+// fork: the tests make their HTTP client before `connect` installs the
+// crypto provider: installed before they run (Linux).
+#[cfg(all(test, target_os = "linux"))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static INSTALL_CRYPTO: extern "C" fn() = {
+    extern "C" fn install() {
+        let _ = rustls_rustcrypto::provider().install_default();
+    }
+    install
+};

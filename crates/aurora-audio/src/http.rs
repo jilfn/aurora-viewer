@@ -224,7 +224,7 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>, HttpError> {
         .get_or_init(|| {
             // Explicit provider: the workspace may enable several rustls
             // crypto backends, which makes the implicit default ambiguous.
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let provider = Arc::new(rustls_rustcrypto::provider());
             rustls::ClientConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
                 // Some stations omit their intermediate certificate (#1628).
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn https_rejects_an_untrusted_certificate() {
         let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let provider = Arc::new(rustls_rustcrypto::provider());
         let config = rustls::ServerConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .unwrap()

@@ -20,8 +20,10 @@ glam = "0.34.1"
 log = "0.4.34"
 md5 = "0.8.1"
 parking_lot = "0.13.0"
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip"] }
-rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "gzip"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
+# fork: the pure-Rust crypto provider in place of aws-lc-rs (no cmake, no C)
+rustls-rustcrypto = "=0.1.0-pre.0"
 rustls-webpki = { version = "0.103.15", default-features = false, features = ["alloc"] }
 serde_json = "1.0.151"
 serde = { version = "1.0.229", features = ["derive"] }

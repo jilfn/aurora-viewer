@@ -140,6 +140,7 @@ fn main() -> anyhow::Result<()> {
     let dozen_off = unsafe { aurora_render::vulkan_drivers::disable() };
     // the switch to a new version shows the startup splash's window
     // throughout (splash/), handed to the new viewer's own splash
+    aurora_net::install_crypto();
     let mut update_window = splash::UpdateWindow::default();
     if aurora_updater::install::run_helper(&mut |version, stage| update_window.stage(version, stage))? {
         return Ok(());

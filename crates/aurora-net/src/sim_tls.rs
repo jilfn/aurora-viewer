@@ -74,7 +74,7 @@ pub(crate) fn client_config() -> Result<rustls::ClientConfig, Error> {
 fn provider() -> Arc<CryptoProvider> {
     CryptoProvider::get_default()
         .cloned()
-        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .unwrap_or_else(|| Arc::new(rustls_rustcrypto::provider()))
 }
 
 /// One verifier for every simulator client, so that the log names each
