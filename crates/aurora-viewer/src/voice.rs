@@ -414,7 +414,7 @@ fn non_empty(s: &str) -> Option<String> {
 /// Firestorm's LLCoordFrame::getQuaternion (llcoordframe.cpp) uses forward,
 /// left, up axes. The inverse render view contains right, up, backward axes.
 /// Sending that render rotation directly turns the voice listener sideways.
-pub(crate) fn listener_rotation(view: glam::Mat4) -> Quat {
+pub fn listener_rotation(view: glam::Mat4) -> Quat {
     let world = view.inverse();
     Quat::from_mat3(&glam::Mat3::from_cols(
         -world.z_axis.truncate(),

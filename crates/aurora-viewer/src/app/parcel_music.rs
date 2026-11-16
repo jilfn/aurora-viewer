@@ -4,7 +4,7 @@
 //! keep an enabled radio through a teleport, without restarting an unchanged URL.
 
 #[derive(Default)]
-pub(super) struct Radio {
+pub struct Radio {
     requested: bool,
     parcel: Option<String>,
     manual: Option<String>,
@@ -88,7 +88,7 @@ impl Radio {
 /// (stopInternetStreamWithAutoFade); starting a station, by hand or with
 /// the parcel, fades in (startInternetStreamWithAutoFade).
 #[derive(Default)]
-pub(super) struct Fade {
+pub struct Fade {
     state: FadeState,
     /// What the engine plays (getInternetStreamURL).
     playing: String,
@@ -108,7 +108,7 @@ enum FadeState {
 
 /// The fade's settings: on, fade in and fade out in seconds.
 #[derive(Clone, Copy)]
-pub(super) struct FadeTimes {
+pub struct FadeTimes {
     pub on: bool,
     pub fade_in: f32,
     pub fade_out: f32,
@@ -116,7 +116,7 @@ pub(super) struct FadeTimes {
 
 /// What the engine is told to do this frame.
 #[derive(Debug, PartialEq)]
-pub(super) enum StreamChange {
+pub enum StreamChange {
     Play(String),
     Stop,
 }

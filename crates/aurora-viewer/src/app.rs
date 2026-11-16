@@ -83,7 +83,7 @@ mod gestures;
 mod give_demo;
 mod gpu_recovery;
 mod gpu_stall;
-mod parcel_music;
+pub mod parcel_music;
 pub(crate) use gpu_stall::withdraw_all as withdraw_gpu_notices;
 mod avatar_align;
 mod debug_settings;
